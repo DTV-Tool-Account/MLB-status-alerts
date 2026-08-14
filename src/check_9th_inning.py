@@ -58,7 +58,8 @@ def check_9th_inning_games():
         
         print(f"Active Games: {len(active_games)}\n")
         
-        all_game_blocks = []
+        in_progress_games = []
+        final_games = []
         
         # Check each game
         for game in active_games:
@@ -92,8 +93,8 @@ def check_9th_inning_games():
                     'home_team': home_team
                 }
             
-            # Add to summary
-            all_game_blocks.append({
+            # Separate into in-progress and final
+            game_info = {
                 'away_team': away_team,
                 'home_team': home_team,
                 'away_score': away_score,
@@ -101,15 +102,20 @@ def check_9th_inning_games():
                 'inning': current_inning,
                 'state': inning_state,
                 'status': status
-            })
+            }
+            
+            if status in ['Final', 'Game Over']:
+                final_games.append(game_info)
+            else:
+                in_progress_games.append(game_info)
             
             print()
         
         # Save updated alerted games
         save_alerted_games(alerted_games)
         
-        # Send summary of all games
-        send_games_summary(all_game_blocks)
+        # Send summary of all games with stacked sections
+        send_games_summary(final_games, in_progress_games)
     
     except Exception as e:
         print(f"❌ Error checking games: {e}")
@@ -259,26 +265,11 @@ def send_9th_inning_alert(game, inning, state, status):
     except SlackApiError as e:
         print(f"❌ Slack API error: {e}")
 
-def send_games_summary(games):
-    """Send summary of all active games with enhanced formatting"""
+def send_games_summary(final_games, in_progress_games):
+    """Send summary of all games with stacked sections: Finals first, then In Progress"""
     try:
-        if not games:
+        if not final_games and not in_progress_games:
             return
-        
-        # Build game lines with bold red inning numbers
-        game_lines = []
-        for game in games:
-            inning_num = game['inning']
-            arrow = get_inning_arrow(game['state'])
-            away_team = game['away_team']
-            home_team = game['home_team']
-            away_score = game['away_score']
-            home_score = game['home_score']
-            status = game['status']
-            
-            # Format: Bold inning number, then rest of info
-            game_line = f"*{inning_num}* {arrow} {away_team} ({away_score}) vs {home_team} ({home_score}) - {status}"
-            game_lines.append(game_line)
         
         blocks = [
             {
@@ -288,24 +279,60 @@ def send_games_summary(games):
                     "text": "⚾ MLB Games Update",
                     "emoji": True
                 }
-            },
-            {
+            }
+        ]
+        
+        # FINAL GAMES SECTION
+        if final_games:
+            final_lines = []
+            for game in final_games:
+                away_team = game['away_team']
+                home_team = game['home_team']
+                away_score = game['away_score']
+                home_score = game['home_score']
+                
+                game_line = f"{away_team} ({away_score}) vs {home_team} ({home_score})"
+                final_lines.append(game_line)
+            
+            blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "\n".join(game_lines)
+                    "text": "*FINAL*\n" + "\n".join(final_lines)
                 }
-            },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"Summary updated {datetime.now().strftime('%I:%M %p EDT')}"
-                    }
-                ]
-            }
-        ]
+            })
+        
+        # IN PROGRESS GAMES SECTION
+        if in_progress_games:
+            in_progress_lines = []
+            for game in in_progress_games:
+                inning_num = game['inning']
+                arrow = get_inning_arrow(game['state'])
+                away_team = game['away_team']
+                home_team = game['home_team']
+                away_score = game['away_score']
+                home_score = game['home_score']
+                
+                game_line = f"*{inning_num}* {arrow} {away_team} ({away_score}) vs {home_team} ({home_score})"
+                in_progress_lines.append(game_line)
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*IN PROGRESS*\n" + "\n".join(in_progress_lines)
+                }
+            })
+        
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"Summary updated {datetime.now().strftime('%I:%M %p EDT')}"
+                }
+            ]
+        })
         
         response = client.chat_postMessage(
             channel=channel_id,
