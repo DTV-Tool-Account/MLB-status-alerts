@@ -4,18 +4,40 @@ import statsapi
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from datetime import datetime
+import pickle
 
 # Initialize Slack client
 slack_token = os.getenv("SLACK_BOT_TOKEN")
 channel_id = os.getenv("SLACK_CHANNEL_ID")
 client = WebClient(token=slack_token)
 
-# Track alerted games in this run
-alerted_games = set()
+# File to persist alerted games across runs
+ALERTED_GAMES_FILE = "alerted_games.pkl"
+
+def load_alerted_games():
+    """Load previously alerted games from file"""
+    try:
+        if os.path.exists(ALERTED_GAMES_FILE):
+            with open(ALERTED_GAMES_FILE, 'rb') as f:
+                return pickle.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load alerted games: {e}")
+    return {}
+
+def save_alerted_games(alerted_games):
+    """Save alerted games to file"""
+    try:
+        with open(ALERTED_GAMES_FILE, 'wb') as f:
+            pickle.dump(alerted_games, f)
+    except Exception as e:
+        print(f"⚠️ Could not save alerted games: {e}")
 
 def check_9th_inning_games():
-    """Fetch MLB games and display all innings, alert only for 9th inning finals"""
+    """Fetch MLB games and display all innings, alert only ONCE per game for 9th inning"""
     try:
+        # Load previously alerted games
+        alerted_games = load_alerted_games()
+        
         # Get today's games
         schedule = statsapi.schedule(start_date="2026-08-14", end_date="2026-08-14")
         
@@ -36,7 +58,6 @@ def check_9th_inning_games():
         
         print(f"Active Games: {len(active_games)}\n")
         
-        ninth_inning_games = []
         all_game_blocks = []
         
         # Check each game
@@ -60,17 +81,16 @@ def check_9th_inning_games():
             print(f"   Status: {status}")
             print(f"   Inning: {current_inning} ({inning_state})")
             
-            # Check for alert conditions: 9th inning
-            if current_inning == 9:
-                if game_pk not in alerted_games:
-                    print(f"   ⚠️  9TH INNING ALERT TRIGGERED!")
-                    ninth_inning_games.append({
-                        'game': game,
-                        'inning': current_inning,
-                        'state': inning_state,
-                        'status': status
-                    })
-                    alerted_games.add(game_pk)
+            # Check if game has reached 9th inning and hasn't been alerted yet
+            if current_inning == 9 and game_pk not in alerted_games:
+                print(f"   ⚠️  9TH INNING ALERT TRIGGERED!")
+                send_9th_inning_alert(game, current_inning, inning_state, status)
+                # Mark as alerted
+                alerted_games[game_pk] = {
+                    'alerted_at_inning': current_inning,
+                    'away_team': away_team,
+                    'home_team': home_team
+                }
             
             # Add to summary
             all_game_blocks.append({
@@ -85,9 +105,8 @@ def check_9th_inning_games():
             
             print()
         
-        # Send individual alerts for 9th inning games
-        for ninth_game in ninth_inning_games:
-            send_9th_inning_alert(ninth_game['game'], ninth_game['inning'], ninth_game['state'], ninth_game['status'])
+        # Save updated alerted games
+        save_alerted_games(alerted_games)
         
         # Send summary of all games
         send_games_summary(all_game_blocks)
@@ -106,7 +125,7 @@ def get_inning_arrow(state):
         return '↔️'
 
 def send_9th_inning_alert(game, inning, state, status):
-    """Send Slack alert for 9th inning game"""
+    """Send Slack alert for 9th inning game (ONE TIME ONLY)"""
     try:
         away_team = game.get('away_name', 'Away Team')
         home_team = game.get('home_name', 'Home Team')
@@ -258,7 +277,6 @@ def send_games_summary(games):
             status = game['status']
             
             # Format: Bold inning number, then rest of info
-            # Using *inning_num* for bold, rest normal
             game_line = f"*{inning_num}* {arrow} {away_team} ({away_score}) vs {home_team} ({home_score}) - {status}"
             game_lines.append(game_line)
         
