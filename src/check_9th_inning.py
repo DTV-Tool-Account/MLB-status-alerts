@@ -3,7 +3,7 @@ import json
 import statsapi
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pickle
 
 # Initialize Slack client
@@ -11,8 +11,12 @@ slack_token = os.getenv("SLACK_BOT_TOKEN")
 channel_id = os.getenv("SLACK_CHANNEL_ID")
 client = WebClient(token=slack_token)
 
-# File to persist alerted games across runs
+# Files to persist data across runs
 ALERTED_GAMES_FILE = "alerted_games.pkl"
+LAST_SUMMARY_FILE = "last_summary.pkl"
+
+# Summary update interval in minutes
+SUMMARY_INTERVAL_MINUTES = 30
 
 def load_alerted_games():
     """Load previously alerted games from file"""
@@ -33,14 +37,51 @@ def save_alerted_games(alerted_games):
     except Exception as e:
         print(f"⚠️ Could not save alerted games: {e}")
 
+def load_last_summary_time():
+    """Load timestamp of last summary sent"""
+    try:
+        if os.path.exists(LAST_SUMMARY_FILE):
+            with open(LAST_SUMMARY_FILE, 'rb') as f:
+                return pickle.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load last summary time: {e}")
+    return None
+
+def save_last_summary_time(timestamp):
+    """Save timestamp of last summary sent"""
+    try:
+        with open(LAST_SUMMARY_FILE, 'wb') as f:
+            pickle.dump(timestamp, f)
+    except Exception as e:
+        print(f"⚠️ Could not save last summary time: {e}")
+
+def should_send_summary():
+    """Check if enough time has passed since last summary"""
+    last_summary = load_last_summary_time()
+    now = datetime.now()
+    
+    if last_summary is None:
+        return True
+    
+    time_since_last = now - last_summary
+    should_send = time_since_last >= timedelta(minutes=SUMMARY_INTERVAL_MINUTES)
+    
+    if should_send:
+        print(f"⏰ Summary interval elapsed ({SUMMARY_INTERVAL_MINUTES} min)")
+    else:
+        remaining = SUMMARY_INTERVAL_MINUTES - int(time_since_last.total_seconds() / 60)
+        print(f"⏰ Next summary in {remaining} minutes")
+    
+    return should_send
+
 def check_9th_inning_games():
-    """Fetch MLB games and display all innings, alert only ONCE per game for 9th inning"""
+    """Fetch MLB games, alert on 9th/final, send summary every 30 min"""
     try:
         # Load previously alerted games
         alerted_games = load_alerted_games()
         print(f"📋 Loaded {len(alerted_games)} previously alerted games")
         
-        # Get TODAY'S games (not hardcoded)
+        # Get TODAY'S games
         today = str(date.today())
         print(f"📅 Checking games for: {today}")
         
@@ -65,6 +106,7 @@ def check_9th_inning_games():
         
         in_progress_games = []
         final_games = []
+        new_alerts = []
         
         # Check each game
         for game in active_games:
@@ -90,8 +132,14 @@ def check_9th_inning_games():
             # Check if game has reached 9th inning and hasn't been alerted yet
             if current_inning == 9 and game_pk not in alerted_games:
                 print(f"   ⚠️  9TH INNING ALERT TRIGGERED!")
-                send_9th_inning_alert(game, current_inning, inning_state, status)
-                # Mark as alerted with timestamp
+                new_alerts.append({
+                    'game': game,
+                    'inning': current_inning,
+                    'state': inning_state,
+                    'status': status,
+                    'alert_type': '9th_inning'
+                })
+                # Mark as alerted
                 alerted_games[game_pk] = {
                     'alerted_at_inning': current_inning,
                     'away_team': away_team,
@@ -123,8 +171,16 @@ def check_9th_inning_games():
         # Save updated alerted games
         save_alerted_games(alerted_games)
         
-        # Send summary of all games with stacked sections
-        send_games_summary(final_games, in_progress_games)
+        # Send REAL-TIME alerts for 9th inning/final
+        for alert in new_alerts:
+            send_9th_inning_alert(alert['game'], alert['inning'], alert['state'], alert['status'])
+        
+        # Send SUMMARY only every 30 minutes
+        if should_send_summary():
+            send_games_summary(final_games, in_progress_games)
+            save_last_summary_time(datetime.now())
+        else:
+            print("⏭️ Skipping summary (not yet time for periodic update)")
     
     except Exception as e:
         print(f"❌ Error checking games: {e}")
@@ -140,7 +196,7 @@ def get_inning_arrow(state):
         return '↔️'
 
 def send_9th_inning_alert(game, inning, state, status):
-    """Send Slack alert for 9th inning game (ONE TIME ONLY)"""
+    """Send REAL-TIME Slack alert for 9th inning game"""
     try:
         away_team = game.get('away_name', 'Away Team')
         home_team = game.get('home_name', 'Home Team')
@@ -269,13 +325,13 @@ def send_9th_inning_alert(game, inning, state, status):
             blocks=blocks
         )
         
-        print(f"✅ 9th Inning alert sent!")
+        print(f"✅ REAL-TIME alert sent!")
     
     except SlackApiError as e:
         print(f"❌ Slack API error: {e}")
 
 def send_games_summary(final_games, in_progress_games):
-    """Send summary of all games with stacked sections: Finals first, then In Progress"""
+    """Send PERIODIC (every 30 min) summary of all games"""
     try:
         if not final_games and not in_progress_games:
             return
@@ -338,7 +394,7 @@ def send_games_summary(final_games, in_progress_games):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"Summary updated {datetime.now().strftime('%I:%M %p EDT')}"
+                    "text": f"Summary updated {datetime.now().strftime('%I:%M %p EDT')} (30-min interval)"
                 }
             ]
         })
@@ -348,7 +404,7 @@ def send_games_summary(final_games, in_progress_games):
             blocks=blocks
         )
         
-        print(f"✅ Games summary sent!")
+        print(f"✅ PERIODIC summary sent!")
     
     except SlackApiError as e:
         print(f"❌ Slack API error sending summary: {e}")
