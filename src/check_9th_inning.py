@@ -3,7 +3,7 @@ import json
 import statsapi
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from datetime import datetime
+from datetime import datetime, date
 import pickle
 
 # Initialize Slack client
@@ -29,6 +29,7 @@ def save_alerted_games(alerted_games):
     try:
         with open(ALERTED_GAMES_FILE, 'wb') as f:
             pickle.dump(alerted_games, f)
+        print(f"✅ Saved alerted games: {len(alerted_games)} games tracked")
     except Exception as e:
         print(f"⚠️ Could not save alerted games: {e}")
 
@@ -37,16 +38,20 @@ def check_9th_inning_games():
     try:
         # Load previously alerted games
         alerted_games = load_alerted_games()
+        print(f"📋 Loaded {len(alerted_games)} previously alerted games")
         
-        # Get today's games
-        schedule = statsapi.schedule(start_date="2026-08-14", end_date="2026-08-14")
+        # Get TODAY'S games (not hardcoded)
+        today = str(date.today())
+        print(f"📅 Checking games for: {today}")
+        
+        schedule = statsapi.schedule(start_date=today, end_date=today)
         
         if not schedule:
             print("No games found for today")
             return
         
         print(f"\n{'='*80}")
-        print(f"MLB GAMES STATUS REPORT - {len(schedule)} games found")
+        print(f"MLB GAMES STATUS REPORT - {len(schedule)} games found for {today}")
         print(f"{'='*80}\n")
         
         # Filter for in-progress and final games
@@ -86,12 +91,16 @@ def check_9th_inning_games():
             if current_inning == 9 and game_pk not in alerted_games:
                 print(f"   ⚠️  9TH INNING ALERT TRIGGERED!")
                 send_9th_inning_alert(game, current_inning, inning_state, status)
-                # Mark as alerted
+                # Mark as alerted with timestamp
                 alerted_games[game_pk] = {
                     'alerted_at_inning': current_inning,
                     'away_team': away_team,
-                    'home_team': home_team
+                    'home_team': home_team,
+                    'alerted_timestamp': datetime.now().isoformat(),
+                    'status_at_alert': status
                 }
+            elif game_pk in alerted_games:
+                print(f"   ℹ️ Already alerted for this game")
             
             # Separate into in-progress and final
             game_info = {
