@@ -3,7 +3,7 @@ import json
 import statsapi
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import pickle
 
 # Initialize Slack client
@@ -57,6 +57,7 @@ def save_last_summary_time(timestamp):
 
 def should_send_summary():
     """Check if enough time has passed since last summary"""
+    from datetime import timedelta
     last_summary = load_last_summary_time()
     now = datetime.now()
     
@@ -74,8 +75,44 @@ def should_send_summary():
     
     return should_send
 
+def get_weather_emoji(conditions):
+    """Return emoji based on weather conditions"""
+    if not conditions:
+        return "🌤️"
+    
+    conditions = conditions.lower()
+    if 'rain' in conditions or 'precipitation' in conditions:
+        return "🌧️"
+    elif 'cloud' in conditions:
+        return "☁️"
+    elif 'clear' in conditions or 'sunny' in conditions:
+        return "☀️"
+    elif 'wind' in conditions:
+        return "💨"
+    elif 'snow' in conditions:
+        return "❄️"
+    else:
+        return "🌤️"
+
+def get_delay_indicator(status_detail):
+    """Check if game is delayed"""
+    if not status_detail:
+        return None
+    
+    status_detail = status_detail.lower()
+    if 'delay' in status_detail:
+        return "⏸️ DELAYED"
+    elif 'rain' in status_detail:
+        return "🌧️ RAIN DELAY"
+    elif 'weather' in status_detail:
+        return "⛈️ WEATHER DELAY"
+    elif 'suspended' in status_detail:
+        return "🛑 SUSPENDED"
+    
+    return None
+
 def check_9th_inning_games():
-    """Fetch MLB games, alert on 9th/final, send summary every 30 min"""
+    """Fetch MLB games and alert only when 9th inning is reached"""
     try:
         # Load previously alerted games
         alerted_games = load_alerted_games()
@@ -124,10 +161,24 @@ def check_9th_inning_games():
             current_inning = linescore.get('currentInning', 'N/A')
             inning_state = linescore.get('inningState', 'Unknown')
             
+            # Get weather data
+            weather = game_data.get('gameData', {}).get('weather', {})
+            weather_conditions = weather.get('condition', 'Unknown')
+            weather_temp = weather.get('temp', 'N/A')
+            weather_wind = weather.get('wind', {})
+            wind_speed = weather_wind.get('speed', 'N/A')
+            
+            # Get game status details (for delays)
+            status_detail = game_data.get('gameData', {}).get('status', {}).get('detailedState', '')
+            delay_indicator = get_delay_indicator(status_detail)
+            
             # Print game status
             print(f"📊 {away_team} @ {home_team}")
             print(f"   Status: {status}")
             print(f"   Inning: {current_inning} ({inning_state})")
+            print(f"   Weather: {weather_conditions} {weather_temp}°F, Wind: {wind_speed} mph")
+            if delay_indicator:
+                print(f"   {delay_indicator}")
             
             # Check if game has reached 9th inning and hasn't been alerted yet
             if current_inning == 9 and game_pk not in alerted_games:
@@ -137,7 +188,9 @@ def check_9th_inning_games():
                     'inning': current_inning,
                     'state': inning_state,
                     'status': status,
-                    'alert_type': '9th_inning'
+                    'weather_conditions': weather_conditions,
+                    'weather_temp': weather_temp,
+                    'wind_speed': wind_speed
                 })
                 # Mark as alerted
                 alerted_games[game_pk] = {
@@ -158,7 +211,11 @@ def check_9th_inning_games():
                 'home_score': home_score,
                 'inning': current_inning,
                 'state': inning_state,
-                'status': status
+                'status': status,
+                'weather_conditions': weather_conditions,
+                'weather_temp': weather_temp,
+                'wind_speed': wind_speed,
+                'delay_indicator': delay_indicator
             }
             
             if status in ['Final', 'Game Over']:
@@ -171,7 +228,7 @@ def check_9th_inning_games():
         # Save updated alerted games
         save_alerted_games(alerted_games)
         
-        # Send REAL-TIME alerts for 9th inning/final
+        # Send REAL-TIME alerts for 9th inning ONLY (no final alerts)
         for alert in new_alerts:
             send_9th_inning_alert(alert['game'], alert['inning'], alert['state'], alert['status'])
         
@@ -196,142 +253,82 @@ def get_inning_arrow(state):
         return '↔️'
 
 def send_9th_inning_alert(game, inning, state, status):
-    """Send REAL-TIME Slack alert for 9th inning game"""
+    """Send REAL-TIME Slack alert for 9th inning (in progress only)"""
     try:
         away_team = game.get('away_name', 'Away Team')
         home_team = game.get('home_name', 'Home Team')
         away_score = game.get('away_score', 0)
         home_score = game.get('home_score', 0)
         
-        is_final = status in ['Final', 'Game Over']
-        
-        if is_final:
-            # FINAL GAME - All bold
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "🚨 FINAL 🚨",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*{away_team} vs {home_team}*"
-                    }
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*{away_team}*\n*{away_score}*"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*{home_team}*\n*{home_score}*"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Inning:*\n*9th*"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Status:*\n*Final*"
-                        }
-                    ]
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"Updated {datetime.now().strftime('%I:%M %p EDT')}"
-                        }
-                    ]
+        # Only send alert if game is still in progress (not final)
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "🚨 9th Inning 🚨",
+                    "emoji": True
                 }
-            ]
-        else:
-            # 9TH INNING IN PROGRESS - Bold only 9th inning, rest normal
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "🚨 9th Inning 🚨",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"{away_team} vs {home_team}"
-                    }
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"{away_team}\n{away_score}"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"{home_team}\n{home_score}"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"Inning:\n*9th* ({state})"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"Status:\nIn Progress"
-                        }
-                    ]
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"Updated {datetime.now().strftime('%I:%M %p EDT')}"
-                        }
-                    ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"{away_team} vs {home_team}"
                 }
-            ]
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"{away_team}\n{away_score}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"{home_team}\n{home_score}"
+                    }
+                ]
+            },
+            {
+                "type": "divider"
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Inning:\n*9th* ({state})"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Status:\nIn Progress"
+                    }
+                ]
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Updated {datetime.now().strftime('%I:%M %p EDT')}"
+                    }
+                ]
+            }
+        ]
         
         response = client.chat_postMessage(
             channel=channel_id,
             blocks=blocks
         )
         
-        print(f"✅ REAL-TIME alert sent!")
+        print(f"✅ 9th Inning alert sent!")
     
     except SlackApiError as e:
         print(f"❌ Slack API error: {e}")
 
 def send_games_summary(final_games, in_progress_games):
-    """Send PERIODIC (every 30 min) summary of all games"""
+    """Send PERIODIC (every 30 min) summary of all games with weather"""
     try:
         if not final_games and not in_progress_games:
             return
@@ -355,8 +352,9 @@ def send_games_summary(final_games, in_progress_games):
                 home_team = game['home_team']
                 away_score = game['away_score']
                 home_score = game['home_score']
+                weather_emoji = get_weather_emoji(game['weather_conditions'])
                 
-                game_line = f"{away_team} ({away_score}) vs {home_team} ({home_score})"
+                game_line = f"{away_team} ({away_score}) vs {home_team} ({home_score}) {weather_emoji}"
                 final_lines.append(game_line)
             
             blocks.append({
@@ -377,8 +375,10 @@ def send_games_summary(final_games, in_progress_games):
                 home_team = game['home_team']
                 away_score = game['away_score']
                 home_score = game['home_score']
+                weather_emoji = get_weather_emoji(game['weather_conditions'])
+                delay_info = f" {game['delay_indicator']}" if game['delay_indicator'] else ""
                 
-                game_line = f"*{inning_num}* {arrow} {away_team} ({away_score}) vs {home_team} ({home_score})"
+                game_line = f"*{inning_num}* {arrow} {away_team} ({away_score}) vs {home_team} ({home_score}) {weather_emoji}{delay_info}"
                 in_progress_lines.append(game_line)
             
             blocks.append({
