@@ -1,25 +1,27 @@
-name: Check MLB 9th Inning
+name: Check 9th Inning
 
 on:
   schedule:
-    - cron: '*/10 16-23,0-5 * * *'  # Every 10 minutes from 12 PM - 1 AM EDT (4 PM - 5 AM UTC)
-  workflow_dispatch:  # Allow manual trigger from Actions tab
+    - cron: '*/10 12-7 * * *'
+  workflow_dispatch:
 
 jobs:
-  check-games:
+  check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Check for 9th inning games
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run 9th inning check
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
