@@ -2,7 +2,7 @@ name: Check 9th Inning
 
 on:
   schedule:
-- cron: '*/10 12-7 * * *'
+    - cron: '*/10 12-7 * * *'
   workflow_dispatch:
 
 jobs:
