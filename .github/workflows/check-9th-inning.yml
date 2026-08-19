@@ -1,5 +1,5 @@
+# MLB 9th Inning Alert Monitor
 name: Check 9th Inning
-
 on:
   schedule:
     - cron: '*/10 12-23 * * *'
