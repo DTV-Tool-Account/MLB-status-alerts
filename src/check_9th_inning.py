@@ -242,9 +242,10 @@ def check_9th_inning_games():
         # DEBUG: Show all game statuses
         print(f"📊 ALL games statuses:", flush=True)
         for g in schedule:
-            print(f"   {g['away_name']} @ {g['home_name']}: {g['status']}", flush=True)
+            print(f"   {g['away_name']} @ {g['home_name']}: STATUS='{g['status']}'", flush=True)
         
-        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live']]
+        # Include Delayed and all active statuses
+        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live', 'Delayed', 'Pre-Game']]
         print(f"📊 Active games: {len(active_games)}", flush=True)
         
         if not active_games:
@@ -280,10 +281,8 @@ def check_9th_inning_games():
                 
                 print(f"   Inning: {inning} ({inning_state})", flush=True)
                 
-                # Check for 9th inning alert - IMPROVED LOGIC
-                # Only alert if: inning is exactly 9, game is in progress, and we haven't alerted yet
-                if inning == 9 and status in ['In Progress', 'Live']:
-                    # Create a unique key for this game at 9th inning
+                # Check for 9th inning alert
+                if inning == 9 and status in ['In Progress', 'Live', 'Delayed']:
                     alert_key = f"{game_id}_9th"
                     
                     if alert_key not in alerted_games:
