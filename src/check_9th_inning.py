@@ -168,7 +168,7 @@ def send_9th_inning_alert(away_team, home_team, away_score, home_score, inning_s
         ]
         
         client.chat_postMessage(channel=channel_id, blocks=blocks)
-        print(f"✅ 9th Inning alert sent!", flush=True)
+        print(f"✅ 9th Inning alert sent for {away_team} @ {home_team}!", flush=True)
     
     except Exception as e:
         print(f"❌ Alert error: {e}", flush=True)
@@ -275,11 +275,18 @@ def check_9th_inning_games():
                 
                 print(f"   Inning: {inning} ({inning_state})", flush=True)
                 
-                # Check for 9th inning alert
-                if inning == 9 and game_id not in alerted_games and status == 'In Progress':
-                    print(f"   ⚠️ 9TH INNING!", flush=True)
-                    new_alerts.append((away, home, away_score, home_score, inning_state))
-                    alerted_games[game_id] = True
+                # Check for 9th inning alert - IMPROVED LOGIC
+                # Only alert if: inning is exactly 9, game is in progress, and we haven't alerted yet
+                if inning == 9 and status == 'In Progress':
+                    # Create a unique key for this game at 9th inning
+                    alert_key = f"{game_id}_9th"
+                    
+                    if alert_key not in alerted_games:
+                        print(f"   ⚠️ 9TH INNING ALERT!", flush=True)
+                        new_alerts.append((away, home, away_score, home_score, inning_state))
+                        alerted_games[alert_key] = True
+                    else:
+                        print(f"   ℹ️ Already alerted for 9th inning", flush=True)
                 
                 # Add to summary
                 game_info = {
