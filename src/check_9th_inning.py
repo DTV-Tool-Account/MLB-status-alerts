@@ -239,11 +239,16 @@ def check_9th_inning_games():
         schedule = statsapi.schedule(start_date=today, end_date=today)
         print(f"📅 Total games: {len(schedule)}", flush=True)
         
-        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over']]
+        # DEBUG: Show all game statuses
+        print(f"📊 ALL games statuses:", flush=True)
+        for g in schedule:
+            print(f"   {g['away_name']} @ {g['home_name']}: {g['status']}", flush=True)
+        
+        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live']]
         print(f"📊 Active games: {len(active_games)}", flush=True)
         
         if not active_games:
-            print("No active games", flush=True)
+            print("ℹ️ No active games", flush=True)
             return
         
         in_progress = []
@@ -259,7 +264,7 @@ def check_9th_inning_games():
                 away_score = game['away_score']
                 home_score = game['home_score']
                 
-                print(f"📊 {away} @ {home}", flush=True)
+                print(f"📊 {away} @ {home} (Status: {status})", flush=True)
                 
                 # Get detailed info
                 game_data = statsapi.get('game', {'gamePk': game_id})
@@ -277,7 +282,7 @@ def check_9th_inning_games():
                 
                 # Check for 9th inning alert - IMPROVED LOGIC
                 # Only alert if: inning is exactly 9, game is in progress, and we haven't alerted yet
-                if inning == 9 and status == 'In Progress':
+                if inning == 9 and status in ['In Progress', 'Live']:
                     # Create a unique key for this game at 9th inning
                     alert_key = f"{game_id}_9th"
                     
@@ -306,7 +311,9 @@ def check_9th_inning_games():
                     in_progress.append(game_info)
             
             except Exception as e:
-                print(f"   Error: {e}", flush=True)
+                print(f"   ❌ Error: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
                 continue
         
         save_alerted_games(alerted_games)
