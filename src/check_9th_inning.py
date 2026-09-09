@@ -15,8 +15,6 @@ channel_id = os.getenv("SLACK_CHANNEL_ID")
 client = WebClient(token=slack_token)
 
 ALERTED_GAMES_FILE = "alerted_games.pkl"
-LAST_SUMMARY_FILE = "last_summary.pkl"
-SUMMARY_INTERVAL_MINUTES = 30
 
 def load_alerted_games():
     try:
@@ -34,42 +32,6 @@ def save_alerted_games(alerted_games):
         print(f"✅ Saved {len(alerted_games)} alerted games", flush=True)
     except Exception as e:
         print(f"⚠️ Save error: {e}", flush=True)
-
-def load_last_summary_time():
-    try:
-        if os.path.exists(LAST_SUMMARY_FILE):
-            with open(LAST_SUMMARY_FILE, 'rb') as f:
-                return pickle.load(f)
-    except Exception as e:
-        print(f"⚠️ Load summary error: {e}", flush=True)
-    return None
-
-def save_last_summary_time(timestamp):
-    try:
-        with open(LAST_SUMMARY_FILE, 'wb') as f:
-            pickle.dump(timestamp, f)
-    except Exception as e:
-        print(f"⚠️ Save summary error: {e}", flush=True)
-
-def should_send_summary():
-    from datetime import timedelta
-    last_summary = load_last_summary_time()
-    now = datetime.now()
-    
-    if last_summary is None:
-        print(f"⏰ First summary - sending now", flush=True)
-        return True
-    
-    time_since_last = now - last_summary
-    should_send = time_since_last >= timedelta(minutes=SUMMARY_INTERVAL_MINUTES)
-    
-    if should_send:
-        print(f"⏰ Summary interval elapsed", flush=True)
-    else:
-        remaining = SUMMARY_INTERVAL_MINUTES - int(time_since_last.total_seconds() / 60)
-        print(f"⏰ Next summary in {remaining} min", flush=True)
-    
-    return should_send
 
 def get_weather_emoji(conditions):
     if not conditions:
@@ -109,7 +71,7 @@ def get_inning_arrow(state):
         return '⬇️'
     return '↔️'
 
-def send_9th_inning_alert(away_team, home_team, away_score, home_score, inning_state):
+def send_9th_inning_alert(away_team, home_team, away_score, home_score, inning_state, final_games, in_progress_games):
     try:
         blocks = [
             {
@@ -167,67 +129,32 @@ def send_9th_inning_alert(away_team, home_team, away_score, home_score, inning_s
             }
         ]
         
+        # Add other games context
+        if final_games or in_progress_games:
+            game_lines = []
+            if final_games:
+                for g in final_games:
+                    game_lines.append(f"✅ *{g['away']}* ({g['away_score']}) vs *{g['home']}* ({g['home_score']}) {get_weather_emoji(g['weather'])}")
+            if in_progress_games:
+                for g in in_progress_games:
+                    arrow = get_inning_arrow(g['state'])
+                    delay = f" {g['delay']}" if g['delay'] else ""
+                    game_lines.append(f"⚾ *{g['inning']}* {arrow} *{g['away']}* ({g['away_score']}) vs *{g['home']}* ({g['home_score']}) {get_weather_emoji(g['weather'])}{delay}")
+            
+            if game_lines:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Other Games*\n" + "\n".join(game_lines[:5])  # Show top 5
+                    }
+                })
+        
         client.chat_postMessage(channel=channel_id, blocks=blocks)
         print(f"✅ 9th Inning alert sent for {away_team} @ {home_team}!", flush=True)
     
     except Exception as e:
         print(f"❌ Alert error: {e}", flush=True)
-
-def send_games_summary(final_games, in_progress_games):
-    try:
-        print(f"📊 Sending: {len(final_games)} final, {len(in_progress_games)} in progress", flush=True)
-        
-        blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": "⚾ MLB Games Update",
-                    "emoji": True
-                }
-            }
-        ]
-        
-        if final_games:
-            final_lines = [f"{g['away']} ({g['away_score']}) vs {g['home']} ({g['home_score']}) {get_weather_emoji(g['weather'])}" for g in final_games]
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "*FINAL*\n" + "\n".join(final_lines)
-                }
-            })
-        
-        if in_progress_games:
-            in_progress_lines = []
-            for g in in_progress_games:
-                arrow = get_inning_arrow(g['state'])
-                delay = f" {g['delay']}" if g['delay'] else ""
-                line = f"*{g['inning']}* {arrow} {g['away']} ({g['away_score']}) vs {g['home']} ({g['home_score']}) {get_weather_emoji(g['weather'])}{delay}"
-                in_progress_lines.append(line)
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "*IN PROGRESS*\n" + "\n".join(in_progress_lines)
-                }
-            })
-        
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"Summary updated {datetime.now().strftime('%I:%M %p EDT')}"
-                }
-            ]
-        })
-        
-        client.chat_postMessage(channel=channel_id, blocks=blocks)
-        print(f"✅ Summary sent!", flush=True)
-    
-    except Exception as e:
-        print(f"❌ Summary error: {e}", flush=True)
 
 def check_9th_inning_games():
     print("📋 Starting check...", flush=True)
@@ -239,12 +166,7 @@ def check_9th_inning_games():
         schedule = statsapi.schedule(start_date=today, end_date=today)
         print(f"📅 Total games: {len(schedule)}", flush=True)
         
-        # DEBUG: Show all game statuses
-        print(f"📊 ALL games statuses:", flush=True)
-        for g in schedule:
-            print(f"   {g['away_name']} @ {g['home_name']}: STATUS='{g['status']}'", flush=True)
-        
-        # Include Delayed and all active statuses
+        # Include all active statuses
         active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live', 'Delayed', 'Pre-Game']]
         print(f"📊 Active games: {len(active_games)}", flush=True)
         
@@ -317,17 +239,13 @@ def check_9th_inning_games():
         
         save_alerted_games(alerted_games)
         
-        # Send alerts
-        for away, home, away_score, home_score, inning_state in new_alerts:
-            send_9th_inning_alert(away, home, away_score, home_score, inning_state)
-        
-        # Send summary
-        if should_send_summary():
-            if final or in_progress:
-                send_games_summary(final, in_progress)
-                save_last_summary_time(datetime.now())
-            else:
-                print("⚠️ No games to summarize", flush=True)
+        # ONLY send alerts - nothing else
+        if new_alerts:
+            print(f"📊 Sending {len(new_alerts)} 9th inning alerts", flush=True)
+            for away, home, away_score, home_score, inning_state in new_alerts:
+                send_9th_inning_alert(away, home, away_score, home_score, inning_state, final, in_progress)
+        else:
+            print(f"ℹ️ No new 9th inning alerts - no Slack message sent", flush=True)
         
         print(f"✅ Check complete!", flush=True)
     
