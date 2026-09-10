@@ -180,8 +180,8 @@ def check_9th_inning_games():
         schedule = statsapi.schedule(start_date=today, end_date=today)
         print(f"📅 Total games: {len(schedule)}", flush=True)
         
-        # Include all active statuses
-        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live', 'Delayed', 'Pre-Game', 'Postponed', 'Suspended']]
+        # Only include games that are actually in progress or final
+        active_games = [g for g in schedule if g['status'] in ['In Progress', 'Final', 'Game Over', 'Live', 'Delayed', 'Postponed', 'Suspended']]
         print(f"📊 Active games: {len(active_games)}", flush=True)
         
         if not active_games:
