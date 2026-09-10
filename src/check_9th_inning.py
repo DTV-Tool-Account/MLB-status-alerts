@@ -3,7 +3,7 @@ import json
 import statsapi
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import pickle
 
 print("🚀 Script starting...", flush=True)
@@ -169,7 +169,12 @@ def check_9th_inning_games():
     print("📋 Starting check...", flush=True)
     try:
         alerted_games = load_alerted_games()
-        today = str(date.today())
+        
+        # Get today's date in EDT (UTC-4)
+        edt = timezone(timedelta(hours=-4))
+        today_date = datetime.now(tz=edt).date()
+        today = str(today_date)
+        
         print(f"📅 Date: {today}", flush=True)
         
         schedule = statsapi.schedule(start_date=today, end_date=today)
