@@ -1,3 +1,4 @@
+# v2: Filter out Pre-Game status
 import os
 import json
 import statsapi
