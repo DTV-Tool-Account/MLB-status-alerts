@@ -1,4 +1,4 @@
-# v2: NFL Final 2 Minutes Monitor - Fixed date filtering and time window
+# v3: NFL Final 2 Minutes Monitor - Fixed UTC to EDT timezone conversion
 import os
 import requests
 from slack_sdk import WebClient
@@ -220,22 +220,34 @@ def get_nfl_games():
         return []
 
 def filter_todays_games(events):
-    """Filter events to only include today's games"""
+    """Filter events to only include today's games (in EDT)"""
     # Get today's date in EDT
     edt = timezone(timedelta(hours=-4))
-    today_date = datetime.now(tz=edt).date()
-    today_str = today_date.strftime('%Y-%m-%d')
+    today_edt = datetime.now(tz=edt)
+    today_date = today_edt.date()
+    
+    print(f"   Filtering for games on: {today_date}", flush=True)
     
     today_games = []
     for event in events:
         try:
             event_date_str = event.get('date', '')
-            # Event date format: "2026-09-10T20:20Z" - extract just the date part
-            if event_date_str.startswith(today_str):
+            
+            if not event_date_str:
+                continue
+            
+            # Parse UTC timestamp: "2026-09-11T08:35Z"
+            event_utc = datetime.fromisoformat(event_date_str.replace('Z', '+00:00'))
+            
+            # Convert to EDT
+            event_edt = event_utc.astimezone(edt)
+            event_date = event_edt.date()
+            
+            if event_date == today_date:
                 today_games.append(event)
-                print(f"   ✅ Found today's game: {event_date_str}", flush=True)
+                print(f"   ✅ Found today's game: {event_date_str} → {event_edt.strftime('%I:%M %p EDT')}", flush=True)
             else:
-                print(f"   ⏭️  Skipping future game: {event_date_str}", flush=True)
+                print(f"   ⏭️  Skipping {event_date} game: {event_date_str}", flush=True)
         except Exception as e:
             print(f"   ⚠️  Error filtering game: {e}", flush=True)
             continue
@@ -249,7 +261,8 @@ def check_final_2min_games():
         
         # Get today's date in EDT (UTC-4)
         edt = timezone(timedelta(hours=-4))
-        today_date = datetime.now(tz=edt).date()
+        today_edt = datetime.now(tz=edt)
+        today_date = today_edt.date()
         today = str(today_date)
         
         print(f"📅 Date: {today}", flush=True)
