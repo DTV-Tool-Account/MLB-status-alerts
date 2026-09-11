@@ -1,3 +1,4 @@
+# v2: NFL Final 2 Minutes Monitor - Fixed date filtering and time window
 import os
 import requests
 from slack_sdk import WebClient
@@ -62,25 +63,33 @@ def get_status_indicator(status_detail):
     return None
 
 def parse_time_remaining(status_text):
-    """Extract time remaining from status text (e.g., '2:00' or '0:02')"""
+    """Extract time remaining from status text (e.g., '2:00' or '0:30')"""
     try:
         if not status_text:
-            return None
+            return None, None
         
         status_text = str(status_text).strip()
         
         # Look for time format MM:SS or M:SS
         if ':' in status_text:
-            time_part = status_text.split()[0]  # Get first part before space
-            return time_part
+            time_part = status_text.split()[0]
+            parts = time_part.split(':')
+            if len(parts) == 2:
+                try:
+                    minutes = int(parts[0])
+                    seconds = int(parts[1])
+                    total_seconds = minutes * 60 + seconds
+                    return time_part, total_seconds
+                except:
+                    return None, None
         
-        return None
+        return None, None
     except Exception as e:
         print(f"⚠️ Error parsing time: {e}", flush=True)
-        return None
+        return None, None
 
-def is_2min_warning(status_text, quarter):
-    """Check if game is in 2-minute warning of 4th quarter"""
+def is_final_2min(status_text, quarter):
+    """Check if game is in final ~3 minutes of 4th quarter (more lenient window)"""
     try:
         if quarter != 4:
             return False
@@ -88,38 +97,29 @@ def is_2min_warning(status_text, quarter):
         if not status_text:
             return False
         
-        status_lower = str(status_text).lower()
+        time_str, total_seconds = parse_time_remaining(status_text)
         
-        # Check for 2-minute warning indicator
-        if '2:' in status_text or 'two' in status_lower:
-            # Parse minutes:seconds
-            if ':' in status_text:
-                time_part = status_text.split()[0]
-                parts = time_part.split(':')
-                if len(parts) == 2:
-                    try:
-                        minutes = int(parts[0])
-                        seconds = int(parts[1])
-                        # 2-minute warning is between 2:00 and 0:00
-                        total_seconds = minutes * 60 + seconds
-                        if 0 <= total_seconds <= 120:
-                            return True
-                    except:
-                        pass
+        if total_seconds is None:
+            return False
+        
+        # Final 3 minutes window (180 seconds) to catch more games
+        # This prevents missing alerts due to script timing
+        if 0 <= total_seconds <= 180:
+            return True
         
         return False
     except Exception as e:
-        print(f"⚠️ Error checking 2-min warning: {e}", flush=True)
+        print(f"⚠️ Error checking final 2min: {e}", flush=True)
         return False
 
-def send_2min_warning_alert(away_team, home_team, away_score, home_score, time_remaining, down_distance, final_games, in_progress_games):
+def send_final_2min_alert(away_team, home_team, away_score, home_score, time_remaining, final_games, in_progress_games):
     try:
         blocks = [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "🚨 2 Minute Warning 🚨",
+                    "text": "🚨 Final 2 Minutes 🚨",
                     "emoji": True
                 }
             },
@@ -161,16 +161,6 @@ def send_2min_warning_alert(away_team, home_team, away_score, home_score, time_r
             }
         ]
         
-        # Add down/distance if available
-        if down_distance:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"Down & Distance: {down_distance}"
-                }
-            })
-        
         # Add Final games section
         if final_games:
             final_lines = [f"✅ *{g['away']}* ({g['away_score']}) vs *{g['home']}* ({g['home_score']}) {get_weather_emoji(g['weather'])}" for g in final_games]
@@ -187,7 +177,7 @@ def send_2min_warning_alert(away_team, home_team, away_score, home_score, time_r
             in_progress_lines = []
             for g in in_progress_games:
                 status_ind = f" {g['status']}" if g['status'] else ""
-                line = f"🏈 *{g['quarter']}* *{g['away']}* ({g['away_score']}) vs *{g['home']}* ({g['home_score']}) {get_weather_emoji(g['weather'])}{status_ind}"
+                line = f"🏈 *Q{g['quarter']}* *{g['away']}* ({g['away_score']}) vs *{g['home']}* ({g['home_score']}) {get_weather_emoji(g['weather'])}{status_ind}"
                 in_progress_lines.append(line)
             blocks.append({
                 "type": "section",
@@ -208,29 +198,51 @@ def send_2min_warning_alert(away_team, home_team, away_score, home_score, time_r
         })
         
         client.chat_postMessage(channel=channel_id, blocks=blocks)
-        print(f"✅ 2 Minute Warning alert sent for {away_team} vs {home_team}!", flush=True)
+        print(f"✅ Final 2 Minutes alert sent for {away_team} vs {home_team}!", flush=True)
     
     except Exception as e:
         print(f"❌ Alert error: {e}", flush=True)
 
 def get_nfl_games():
-    """Fetch today's NFL games from ESPN API"""
+    """Fetch NFL games from ESPN API"""
     print("📡 Fetching NFL games from ESPN API...", flush=True)
     try:
-        # ESPN NFL scoreboard endpoint
         url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         
         data = response.json()
         events = data.get('events', [])
-        print(f"✅ ESPN API response received: {len(events)} events", flush=True)
+        print(f"✅ ESPN API response received: {len(events)} total events (all weeks)", flush=True)
         return events
     except Exception as e:
         print(f"❌ Failed to fetch NFL games: {e}", flush=True)
         return []
 
-def check_2min_warning_games():
+def filter_todays_games(events):
+    """Filter events to only include today's games"""
+    # Get today's date in EDT
+    edt = timezone(timedelta(hours=-4))
+    today_date = datetime.now(tz=edt).date()
+    today_str = today_date.strftime('%Y-%m-%d')
+    
+    today_games = []
+    for event in events:
+        try:
+            event_date_str = event.get('date', '')
+            # Event date format: "2026-09-10T20:20Z" - extract just the date part
+            if event_date_str.startswith(today_str):
+                today_games.append(event)
+                print(f"   ✅ Found today's game: {event_date_str}", flush=True)
+            else:
+                print(f"   ⏭️  Skipping future game: {event_date_str}", flush=True)
+        except Exception as e:
+            print(f"   ⚠️  Error filtering game: {e}", flush=True)
+            continue
+    
+    return today_games
+
+def check_final_2min_games():
     print("📋 Starting NFL check...", flush=True)
     try:
         alerted_games = load_alerted_games()
@@ -242,11 +254,15 @@ def check_2min_warning_games():
         
         print(f"📅 Date: {today}", flush=True)
         
-        events = get_nfl_games()
-        print(f"📊 Total events: {len(events)}", flush=True)
+        all_events = get_nfl_games()
+        print(f"📊 Total events from API: {len(all_events)}", flush=True)
+        
+        # Filter to only today's games
+        events = filter_todays_games(all_events)
+        print(f"📊 Today's games: {len(events)}", flush=True)
         
         if not events:
-            print("ℹ️ No NFL games found", flush=True)
+            print("ℹ️ No NFL games today", flush=True)
             return
         
         new_alerts = []
@@ -276,7 +292,6 @@ def check_2min_warning_games():
                 quarter = 0
                 if status_detail:
                     try:
-                        # Status detail format: "Q4, 2:00" or similar
                         if 'Q' in status_detail:
                             quarter_str = status_detail.split('Q')[1].split(',')[0].strip()
                             quarter = int(quarter_str)
@@ -284,29 +299,23 @@ def check_2min_warning_games():
                         quarter = 0
                 
                 # Get time remaining
-                time_remaining = parse_time_remaining(status_detail)
-                
-                # Get down & distance info
-                down_distance = None
-                article = event.get('article', '')
-                if article and ('and' in article.lower() or 'down' in article.lower()):
-                    down_distance = article[:100]  # First 100 chars of article
+                time_remaining, total_seconds = parse_time_remaining(status_detail)
                 
                 # Get status indicator
                 status_indicator = get_status_indicator(status_detail)
                 
-                print(f"📊 {away_team} @ {home_team} (Status: {status_type}, Quarter: {quarter}, Time: {time_remaining})", flush=True)
+                print(f"📊 {away_team} @ {home_team} (Status: {status_type}, Q{quarter}, {status_detail})", flush=True)
                 
-                # Check for 2-minute warning
-                if is_2min_warning(status_detail, quarter) and status_type == 'STATUS_IN_PROGRESS':
-                    alert_key = f"{event_id}_2min"
+                # Check for final 2 minutes
+                if is_final_2min(status_detail, quarter) and status_type == 'STATUS_IN_PROGRESS':
+                    alert_key = f"{event_id}_final2min"
                     
                     if alert_key not in alerted_games:
-                        print(f"   ⚠️ 2 MINUTE WARNING!", flush=True)
-                        new_alerts.append((away_team, home_team, away_score, home_score, time_remaining, down_distance))
+                        print(f"   ⚠️ FINAL 2 MINUTES ALERT! ({time_remaining} remaining)", flush=True)
+                        new_alerts.append((away_team, home_team, away_score, home_score, time_remaining))
                         alerted_games[alert_key] = True
                     else:
-                        print(f"   ℹ️ Already alerted for 2-minute warning", flush=True)
+                        print(f"   ℹ️ Already alerted for this game", flush=True)
                 
                 # Build game info
                 game_info = {
@@ -314,7 +323,7 @@ def check_2min_warning_games():
                     'home': home_team,
                     'away_score': away_score,
                     'home_score': home_score,
-                    'quarter': f"Q{quarter}" if quarter > 0 else 'N/A',
+                    'quarter': quarter if quarter > 0 else 'N/A',
                     'time': time_remaining if time_remaining else 'N/A',
                     'weather': '🌤️',
                     'status': status_indicator
@@ -323,11 +332,14 @@ def check_2min_warning_games():
                 # Categorize by status
                 if status_type in ['STATUS_FINAL', 'STATUS_FINAL_OT']:
                     final_games.append(game_info)
+                    print(f"   → Added to FINAL games", flush=True)
                 elif status_type == 'STATUS_IN_PROGRESS':
                     in_progress_games.append(game_info)
-                elif status_indicator:  # Delayed/Postponed
+                    print(f"   → Added to IN PROGRESS games", flush=True)
+                elif status_indicator:
                     game_info['quarter'] = status_indicator
                     in_progress_games.append(game_info)
+                    print(f"   → Added to IN PROGRESS (delayed)", flush=True)
             
             except Exception as e:
                 print(f"   ❌ Error: {e}", flush=True)
@@ -339,11 +351,11 @@ def check_2min_warning_games():
         
         # ONLY send alerts - nothing else
         if new_alerts:
-            print(f"🏈 Sending {len(new_alerts)} 2-minute warning alerts", flush=True)
-            for away, home, away_score, home_score, time_rem, down_dist in new_alerts:
-                send_2min_warning_alert(away, home, away_score, home_score, time_rem, down_dist, final_games, in_progress_games)
+            print(f"🏈 Sending {len(new_alerts)} final 2-minute alerts", flush=True)
+            for away, home, away_score, home_score, time_rem in new_alerts:
+                send_final_2min_alert(away, home, away_score, home_score, time_rem, final_games, in_progress_games)
         else:
-            print(f"ℹ️ No new 2-minute warnings - no Slack message sent", flush=True)
+            print(f"ℹ️ No new final 2-minute alerts - no Slack message sent", flush=True)
         
         print(f"✅ NFL check complete!", flush=True)
     
@@ -353,4 +365,4 @@ def check_2min_warning_games():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    check_2min_warning_games()
+    check_final_2min_games()
